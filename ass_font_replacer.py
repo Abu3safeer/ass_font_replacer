@@ -11,7 +11,15 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from datetime import datetime
 
 # Default configuration to create if JSON file is missing or corrupted
-default_config = [{"fontBefore": "Default", "fontAfter": "Arial"}]
+default_config = {
+    "fonts": [
+        {
+            "fontBefore": "Default",
+            "fontAfter": "Arial"
+        }
+    ],
+    "removeFontSpacing": True
+}
 
 def load_fonts_config():
     try:
@@ -36,23 +44,29 @@ class Worker(QThread):
     progress = pyqtSignal(int)
     log_message = pyqtSignal(str)
 
-    def __init__(self, files, font_replacements, default_font, output_dir):
+    def __init__(self, files, font_replacements, default_font, output_dir, remove_spacing):
         super().__init__()
         self.files = files
         self.font_replacements = font_replacements
         self.default_font = default_font
         self.output_dir = output_dir
+        self.remove_spacing = remove_spacing
 
     def run(self):
         total_files = len(self.files)
         for index, ass_file_name in enumerate(self.files):
             with open(ass_file_name, 'r', encoding='utf-8-sig') as ass_file:
                 lines = ass_file.readlines()
+            
             new_lines = []
             style_pattern = re.compile(r'^Style: (.+?),(.+?),')
             font_tag_pattern = re.compile(r'\\fn([^\\}]+)')
+            fsp_pattern = re.compile(r'\\fsp-?\d*\.?\d*')
 
             for line in lines:
+                if self.remove_spacing and '\\fsp' in line:
+                    line = fsp_pattern.sub('', line)
+                
                 style_match = style_pattern.match(line)
                 if style_match:
                     font_name = style_match.group(2).strip()
@@ -90,6 +104,7 @@ class App(QWidget):
         
         main_layout = QVBoxLayout()
         
+        # File selection group
         self.label = QLabel('Select a Directory to Process:')
         main_layout.addWidget(self.label)
         
@@ -101,12 +116,19 @@ class App(QWidget):
         self.output_button.clicked.connect(self.selectOutputDirectory)
         main_layout.addWidget(self.output_button)
 
+        # Configuration options group
+        options_layout = QVBoxLayout()
+        options_layout.setSpacing(5)
+        
+        self.recursive_checkbox = QCheckBox('Recursive Search')
+        options_layout.addWidget(self.recursive_checkbox)
+        
+        main_layout.addLayout(options_layout)
+
+        # Processing controls
         self.start_button = QPushButton('Start Processing', self)
         self.start_button.clicked.connect(self.startProcessing)
         main_layout.addWidget(self.start_button)
-
-        self.recursive_checkbox = QCheckBox('Recursive')
-        main_layout.addWidget(self.recursive_checkbox)
         
         self.progress_bar = QProgressBar()
         main_layout.addWidget(self.progress_bar)
@@ -115,11 +137,21 @@ class App(QWidget):
         self.log_area.setReadOnly(True)
         main_layout.addWidget(self.log_area)
 
+        # Table and side buttons
+        table_section = QVBoxLayout()
+        
+        # Add spacing checkbox above the table
+        self.spacing_checkbox = QCheckBox('Remove Font Spacing')
+        table_section.addWidget(self.spacing_checkbox)
+        
+        table_layout = QHBoxLayout()
+        
         self.table = QTableWidget()
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.showContextMenu)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.MultiSelection)
+        table_layout.addWidget(self.table)
         
         side_layout = QVBoxLayout()
         self.add_button = QPushButton('Add Row', self)
@@ -134,39 +166,58 @@ class App(QWidget):
         self.save_button.clicked.connect(self.saveConfig)
         side_layout.addWidget(self.save_button)
         
-        table_layout = QHBoxLayout()
-        table_layout.addWidget(self.table)
         table_layout.addLayout(side_layout)
+        table_section.addLayout(table_layout)
         
-        main_layout.addLayout(table_layout)
+        main_layout.addLayout(table_section)
         self.setLayout(main_layout)
         
         self.show()
 
     def loadConfig(self):
         self.fonts_config = load_fonts_config()
-        self.table.setRowCount(len(self.fonts_config))
+        
+        # Handle old config format (list) and convert to new format (dict)
+        if isinstance(self.fonts_config, list):
+            self.fonts_config = {
+                "fonts": [{"fontBefore": item["fontBefore"], "fontAfter": item["fontAfter"]} 
+                         for item in self.fonts_config],
+                "removeFontSpacing": True
+            }
+        
+        # Set spacing checkbox from config
+        self.spacing_checkbox.setChecked(self.fonts_config.get("removeFontSpacing", True))
+        
+        # Setup font replacement table
+        fonts_list = self.fonts_config.get("fonts", [])
+        self.table.setRowCount(len(fonts_list))
         self.table.setColumnCount(2)
         self.table.setHorizontalHeaderLabels(["fontBefore", "fontAfter"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        for row, entry in enumerate(self.fonts_config):
+        
+        for row, entry in enumerate(fonts_list):
             self.table.setItem(row, 0, QTableWidgetItem(entry["fontBefore"]))
             self.table.setItem(row, 1, QTableWidgetItem(entry["fontAfter"]))
 
     def saveConfig(self):
         rowCount = self.table.rowCount()
-        colCount = self.table.columnCount()
-        new_config = []
+        fonts_list = []
         for row in range(rowCount):
-            entry = {}
-            for col in range(colCount):
-                header = self.table.horizontalHeaderItem(col).text()
-                entry[header] = self.table.item(row, col).text()
-            new_config.append(entry)
+            entry = {
+                "fontBefore": self.table.item(row, 0).text(),
+                "fontAfter": self.table.item(row, 1).text()
+            }
+            fonts_list.append(entry)
+            
+        new_config = {
+            "fonts": fonts_list,
+            "removeFontSpacing": self.spacing_checkbox.isChecked()
+        }
+        
         with open('fonts_config.json', 'w') as json_file:
             json.dump(new_config, json_file, indent=4)
         QMessageBox.information(self, "Success", "Configuration has been saved.")
-        self.fonts_config = new_config  # Update the loaded config to the new config
+        self.fonts_config = new_config
     
     def showDialog(self):
         options = QFileDialog.Options()
@@ -202,16 +253,22 @@ class App(QWidget):
             return
 
         if not self.output_dir:
-            # Attempt to create a default output directory if one wasn't set
             self.selectOutputDirectory()
 
         fonts_config = load_fonts_config()
-        font_replacements = {entry["fontBefore"]: entry["fontAfter"] for entry in fonts_config}
+        # Handle old config format
+        if isinstance(fonts_config, list):
+            font_replacements = {entry["fontBefore"]: entry["fontAfter"] for entry in fonts_config}
+        else:
+            font_replacements = {entry["fontBefore"]: entry["fontAfter"] for entry in fonts_config["fonts"]}
+            
         default_font = font_replacements.get("Default", "Arial")
+        remove_spacing = self.spacing_checkbox.isChecked()
 
         self.progress_bar.setValue(0)
         self.log_area.clear()
-        self.worker = Worker(self.file_list, font_replacements, default_font, self.output_dir)
+        self.worker = Worker(self.file_list, font_replacements, default_font, 
+                           self.output_dir, remove_spacing)
         self.worker.progress.connect(self.updateProgress)
         self.worker.log_message.connect(self.appendLog)
         self.worker.start()
@@ -258,16 +315,27 @@ class App(QWidget):
             event.accept()
     
     def isConfigChanged(self):
-        current_config = []
+        current_fonts = []
         rowCount = self.table.rowCount()
-        colCount = self.table.columnCount()
+        
+        # Build current fonts list from table
         for row in range(rowCount):
-            entry = {}
-            for col in range(colCount):
-                header = self.table.horizontalHeaderItem(col).text()
-                entry[header] = self.table.item(row, col).text()
-            current_config.append(entry)
-        return current_config != self.fonts_config
+            if self.table.item(row, 0) and self.table.item(row, 1):  # Check if items exist
+                entry = {
+                    "fontBefore": self.table.item(row, 0).text(),
+                    "fontAfter": self.table.item(row, 1).text()
+                }
+                current_fonts.append(entry)
+        
+        # Build current config
+        current_config = {
+            "fonts": current_fonts,
+            "removeFontSpacing": self.spacing_checkbox.isChecked()
+        }
+        
+        # Compare with stored config
+        return (current_config["fonts"] != self.fonts_config["fonts"] or 
+                current_config["removeFontSpacing"] != self.fonts_config["removeFontSpacing"])
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
